@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import os
 import re
+from datetime import datetime
 from typing import Generator, List, Tuple
-
-from dateutil import parser
 
 DATE_PATTERNS = [
     r"(\w+ \d+, \d+)",
     r"(\d{4}-\d{2}-\d{2})",
 ]
+
+DATE_FORMATS = ["%B %d, %Y", "%Y-%m-%d"]
+
 
 def get_filenames(files: List[str]) -> Generator[str, None, None]:
     for file in files:
@@ -27,13 +30,14 @@ def get_filenames(files: List[str]) -> Generator[str, None, None]:
 
 def get_filename_pairs(
     files: List[str],
+    add_dates: bool = False,
 ) -> Generator[Tuple[str, str | None], None, None]:
     for file in get_filenames(files):
-        new_file = compute_new_filename(file)
+        new_file = compute_new_filename(file, add_date=add_dates)
         yield file, new_file
 
 
-def compute_new_filename(file: str) -> str | None:
+def compute_new_filename(file: str, *, add_date: bool = False) -> str | None:
     # sourcery skip: use-getitem-for-re-match-groups
     dirname = os.path.dirname(file)
     basename = os.path.basename(file)
@@ -47,32 +51,43 @@ def compute_new_filename(file: str) -> str | None:
             break
 
     if not date_match:
-        return None
+        if not add_date:
+            return None
+
+        # Get the file creation date and format it as a string
+        creation_time = os.path.getctime(file)
+        creation_date = datetime.fromtimestamp(creation_time).strftime("%Y-%m-%d")
+        new_filename = f"{creation_date} {filename}{extension}"
+        return os.path.join(dirname, new_filename)
 
     date_str = date_match.group(1)
 
-    try:
-        parsed_date = parser.parse(date_str)
-        new_date_str = parsed_date.strftime("%Y-%m-%d")
-    except Exception:
+    parsed_date = None
+    for date_format in DATE_FORMATS:
+        with contextlib.suppress(ValueError):
+            parsed_date = datetime.strptime(date_str, date_format)
+            break
+
+    if not parsed_date:
         return None
 
     # Replace the original date string with the new formatted one
-    # new_filename = filename.replace(date_str, new_date_str) + extension
-    new_filename = f'{new_date_str} ' + filename.replace(date_str, "") + extension
+    new_date_str = parsed_date.strftime("%Y-%m-%d")
+    new_filename = f"{new_date_str} {filename.replace(date_str, '').strip()}{extension}"
 
     return os.path.join(dirname, new_filename)
 
 
-def rename_files(files: List[str], dry_run: bool, verbose: bool) -> None:
-    for original_file, new_file in get_filename_pairs(files):
+def rename_files(files: List[str], *, add_dates: bool, dry_run: bool, verbose: bool) -> None:
+    for original_file, new_file in get_filename_pairs(files, add_dates=add_dates):
         if not new_file:
             if verbose:
                 print(f"Skipped: {original_file} (No valid date found)")
             continue
 
         if new_file == original_file:
-            print(f"Skipped: {original_file} (No change)")
+            if verbose:
+                print(f"Skipped: {original_file} (No change)")
             continue
 
         if dry_run:
@@ -86,6 +101,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Rename files to ISO date format.")
     parser.add_argument("files", nargs="+", help="The files to rename")
     parser.add_argument(
+        "--add-dates",
+        action="store_true",
+        help="Add dates, based on creation name, where not present.",
+    )
+    parser.add_argument(
         "-n",
         "--dry-run",
         action="store_true",
@@ -94,7 +114,7 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output.")
 
     args = parser.parse_args()
-    rename_files(args.files, dry_run=args.dry_run, verbose=args.verbose)
+    rename_files(args.files, add_dates=args.add_dates, dry_run=args.dry_run, verbose=args.verbose)
 
 
 if __name__ == "__main__":
