@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import re
+from typing import Generator, List, Tuple
+
+from dateutil import parser
+
+DATE_PATTERNS = [
+    r"(\w+ \d+, \d+)",
+    r"(\d{4}-\d{2}-\d{2})",
+]
+
+def get_filenames(files: List[str]) -> Generator[str, None, None]:
+    for file in files:
+        # Skip files that start with a dot
+        if os.path.basename(file).startswith("."):
+            continue
+
+        # If file is a directory, recursively apply the function to its files
+        if os.path.isdir(file):
+            subfiles = [os.path.join(file, f) for f in os.listdir(file)]
+            yield from get_filenames(subfiles)
+        else:
+            yield file
+
+
+def get_filename_pairs(
+    files: List[str],
+) -> Generator[Tuple[str, str | None], None, None]:
+    for file in get_filenames(files):
+        new_file = compute_new_filename(file)
+        yield file, new_file
+
+
+def compute_new_filename(file: str) -> str | None:
+    # sourcery skip: use-getitem-for-re-match-groups
+    dirname = os.path.dirname(file)
+    basename = os.path.basename(file)
+    filename, extension = os.path.splitext(basename)
+
+    # Use regex to isolate the date part of the filename
+    date_match = None
+    for pattern in DATE_PATTERNS:
+        date_match = re.search(pattern, filename)
+        if date_match:
+            break
+
+    if not date_match:
+        return None
+
+    date_str = date_match.group(1)
+
+    try:
+        parsed_date = parser.parse(date_str)
+        new_date_str = parsed_date.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+    # Replace the original date string with the new formatted one
+    # new_filename = filename.replace(date_str, new_date_str) + extension
+    new_filename = f'{new_date_str} ' + filename.replace(date_str, "") + extension
+
+    return os.path.join(dirname, new_filename)
+
+
+def rename_files(files: List[str], dry_run: bool, verbose: bool) -> None:
+    for original_file, new_file in get_filename_pairs(files):
+        if not new_file:
+            if verbose:
+                print(f"Skipped: {original_file} (No valid date found)")
+            continue
+
+        if new_file == original_file:
+            print(f"Skipped: {original_file} (No change)")
+            continue
+
+        if dry_run:
+            print(f"Would rename: {original_file} -> {new_file}")
+        else:
+            os.rename(original_file, new_file)
+            print(f"Renamed: {original_file} -> {new_file}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Rename files to ISO date format.")
+    parser.add_argument("files", nargs="+", help="The files to rename")
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be renamed, but do not rename files.",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output.")
+
+    args = parser.parse_args()
+    rename_files(args.files, dry_run=args.dry_run, verbose=args.verbose)
+
+
+if __name__ == "__main__":
+    main()
